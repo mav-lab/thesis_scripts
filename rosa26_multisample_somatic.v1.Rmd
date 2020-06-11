@@ -1,0 +1,402 @@
+---
+title: "rosa26 multisample analysis (hiseqXten samples)"
+output:
+  html_notebook: default
+  html_document:
+    df_print: paged
+---
+```{r}
+#load libraries
+library(MutationalPatterns)
+library(BSgenome)
+library(BiocManager)
+library(BSgenome.Mmusculus.UCSC.mm10)
+ref_genome <- "BSgenome.Mmusculus.UCSC.mm10"
+library(ref_genome, character.only = TRUE)
+library(ggplot2)
+library(GenomicFeatures)
+library(AnnotationDbi)
+library(biomaRt)
+```
+```{r}
+#Load samples
+vcf_files <- list.files(path ="./vcfs/", pattern = ".vcf", full.names = TRUE)
+
+sample_names <- c("9 months", "15 months", "18 months")
+
+vcf_files
+```
+```{r}
+#Load the VCF files into a GRangesList
+vcfs <- read_vcfs_as_granges(vcf_files, sample_names, ref_genome)
+```
+```{r}
+#Extract base substitution types and their genomic context
+muts = mutations_from_vcf(vcfs[[1]])
+
+types = mut_type(vcfs[[1]])
+
+context = mut_context(vcfs[[1]], ref_genome)
+
+type_occurrences <- mut_type_occurrences(vcfs, ref_genome)
+
+type_occurrences
+```
+```{r}
+plot_spectrum(type_occurrences, by = sample_names, CT = TRUE, legend = TRUE)
+
+svg(filename='plot_spectrum.svg', width=5, height=4, pointsize = 12)
+plot_spectrum(type_occurrences, by = sample_names, CT = TRUE, legend = TRUE)
+dev.off()
+
+tiff('plot_spectrum.tiff', units="in", width=5, height=4, res=600, compression = 'lzw')
+plot_spectrum(type_occurrences, by = sample_names, CT = TRUE, legend = TRUE)
+dev.off()
+
+```
+Estudiar como centrar la imagen_fig.align="right" no funciona
+```{r, fig.width=10, fig.height=10}
+mut_mat <- mut_matrix(vcf_list = vcfs, ref_genome = ref_genome)
+
+head(mut_mat)
+
+plot_96_profile(mut_mat, condensed = TRUE)
+
+svg(filename='plot_96_profile.svg', width=9, height=10, pointsize = 12)
+plot_96_profile(mut_mat, condensed = TRUE)
+dev.off()
+
+tiff('plot_96_profile.tiff', units="in", width=9, height=10, res=600, compression = 'lzw')
+plot_96_profile(mut_mat, condensed = TRUE)
+dev.off()
+```
+```{r}
+##De novo mutational signature extraction using NMF
+#Generate an estimate rank plot
+mut_mat <- mut_mat + 0.0001
+library("NMF")
+estimate <- nmf(mut_mat, rank=1:5, method="brunet", nrun=10, seed=123456)
+
+plot(estimate)
+
+svg(filename='nmfEstimation.svg', width=6, height=7, pointsize = 12)
+plot(estimate)
+dev.off()
+
+tiff('nmfEstimation.tiff', units="in", width=6, height=7, res=600, compression = 'lzw')
+plot(estimate)
+dev.off()
+```
+```{r}
+#Extract 2 mutational signatures
+nmf_res <- extract_signatures(mut_mat, rank = 2, nrun = 10)
+#Assign signature names
+colnames(nmf_res$signatures) <- c("Signature A", "Signature B")
+rownames(nmf_res$contribution) <- c("Signature A", "Signature B")
+#Plot the 96-profile of the signatures
+svg(filename='nmf_res_signatures.svg', width=7, height=5, pointsize = 12)
+plot_96_profile(nmf_res$signatures, condensed = TRUE)
+dev.off()
+tiff('nmf_res_signatures.tiff', units="in", width=7, height=5, res=600, compression = 'lzw')
+plot_96_profile(nmf_res$signatures, condensed = TRUE)
+dev.off()
+plot_96_profile(nmf_res$signatures, condensed = TRUE)
+```
+```{r, fig.width=9}
+#Visualize the contribution of the signatures
+pc1 <- plot_contribution(nmf_res$contribution, nmf_res$signature, mode = "relative")
+pc2 <- plot_contribution(nmf_res$contribution, nmf_res$signature, mode = "absolute")
+svg(filename='nmf_res_plot_contribution.svg', width=9, height=5, pointsize = 12)
+gridExtra::grid.arrange(pc1, pc2)
+dev.off()
+tiff('nmf_res_plot_contribution.tiff', units="in", width=9, height=5, res=600, compression = 'lzw')
+gridExtra::grid.arrange(pc1, pc2)
+dev.off()
+gridExtra::grid.arrange(pc1, pc2)
+```
+```{r}
+#Download mutational signatures from the COSMIC website
+sp_url <- paste("https://cancer.sanger.ac.uk/cancergenome/assets/", "signatures_probabilities.txt", sep = "")
+cancer_signatures = read.table(sp_url, sep = "\t", header = TRUE)
+#Match the order of the mutation types to MutationalPatterns standard
+new_order = match(row.names(mut_mat), cancer_signatures$Somatic.Mutation.Type)
+#Reorder cancer signatures dataframe
+cancer_signatures = cancer_signatures[as.vector(new_order),]
+#Add trinucletiode changes names as row.names
+row.names(cancer_signatures) = cancer_signatures$Somatic.Mutation.Type
+#Keep only 96 contributions of the signatures in matrix
+cancer_signatures = as.matrix(cancer_signatures[,4:33])
+#Plot mutational profile of the first two COSMIC signatures
+#plot_96_profile(cancer_signatures[,1:2], condensed = TRUE, ymax = 0.5)
+```
+```{r}
+#Calculate pairwise cosine similarity between mutational profiles and COSMIC signatures
+cos_sim_samples_signatures = cos_sim_matrix(mut_mat, cancer_signatures)
+#Plot heatmap with specified signature order
+plot_cosine_heatmap(cos_sim_samples_signatures, cluster_rows = TRUE)
+```
+```{r, fig.height=6, fig.width=8,5}
+#Find optimal contribution of COSMIC signatures to reconstruct 96 mutational profiles
+#Fit mutation matrix to the COSMIC mutational signatures
+fit_res <- fit_to_signatures(mut_mat, cancer_signatures)
+
+#Select signatures with some contribution
+select <- which(rowSums(fit_res$contribution) > 10)
+
+#Plot contribution barplot and heatmap
+
+svg(filename='cosmic_signatures_contribution.svg', width=9, height=7, pointsize = 12)
+plot_contribution(fit_res$contribution[select,],  cancer_signatures[,select], coord_flip = FALSE, mode = "relative")
+dev.off()
+
+tiff('cosmic_signatures_contribution.tiff', units="in", width=9, height=7, res=600, compression = 'lzw')
+plot_contribution(fit_res$contribution[select,],  cancer_signatures[,select], coord_flip = FALSE, mode = "relative")
+dev.off()
+
+svg(filename='cosmic_signatures_heatmap.svg', width=9, height=5, pointsize = 12)
+plot_contribution_heatmap(fit_res$contribution, cluster_samples = TRUE, method = "complete")
+dev.off()
+
+tiff('cosmic_signatures_heatmap.tiff', units="in", width=9, height=5, res=600, compression = 'lzw')
+plot_contribution_heatmap(fit_res$contribution, cluster_samples = TRUE, method = "complete")
+dev.off()
+
+p1 <- plot_contribution(fit_res$contribution[select,],  cancer_signatures[,select], coord_flip = FALSE, mode = "absolute")
+p2 <- plot_contribution_heatmap(fit_res$contribution, cluster_samples = TRUE, method = "complete")
+library(gridExtra)
+p1
+p2
+```
+```{r}
+##Compare the reconstructed mutational profile of sample 1 with its original mutational profile
+plot_compare_profiles(mut_mat[,1], fit_res$reconstructed[,1], profile_names = c("Original", "Reconstructed"), condensed = TRUE)
+```
+ No entiendo del todo bien esta parte, la diferencia entre la original y la reconstruída. Estudiar. 
+```{r}
+#Calculate all pairwise cosine similarities
+cos_sim_ori_rec <- cos_sim_matrix(mut_mat, fit_res$reconstructed)
+#Extract cosine similarities per sample between original and reconstructed
+cos_sim_ori_rec <- as.data.frame(diag(cos_sim_ori_rec))
+#Adjust data frame for plotting with gpplot
+colnames(cos_sim_ori_rec) = "cos_sim"
+cos_sim_ori_rec$sample = row.names(cos_sim_ori_rec)
+ggplot(cos_sim_ori_rec, aes(y=cos_sim, x=sample)) + geom_bar(stat="identity", fill = "skyblue4") + coord_cartesian(ylim=c(0.1, 1)) +  ylab("Cosine similarity\n original VS reconstructed") + xlab("Samples") +   theme_bw() +  theme(panel.grid.minor.y=element_blank(), panel.grid.major.y=element_blank()) + geom_hline(aes(yintercept=.8))
+```
+ ¿Estos valores podrían indicar que ninguna de las firmas mutacionales en cáncer por si sola ni en combinación con otras podrían explicar al 100% los patrones mutacionales presentes en las muestras? 
+```{r}
+##Transcriptional strand bias analysis
+#Get known genes table from UCSC BiocManager::install("TxDb.Mmusculus.UCSC.mm10.knownGene")
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+genes_mm10 <- genes(TxDb.Mmusculus.UCSC.mm10.knownGene)
+genes_mm10
+```
+Citation (from within R, enter citation("TxDb.Mmusculus.UCSC.mm10.knownGene")): Team BC, Maintainer BP (2019). TxDb.Mmusculus.UCSC.mm10.knownGene: Annotation package for TxDb object(s). R package version 3.4.7. 
+```{r}
+#Get transcriptional strand information for all positions in the first VCF object
+strand = mut_strand(vcfs[[1]], genes_mm10)
+#Make mutation count matrix with transcriptional strand information. Only those mutations that are located within gene bodies are counted
+mut_mat_s <- mut_matrix_stranded(vcfs, ref_genome, genes_mm10)
+#Count the number of mutations on each strand, per condition, per mutation type.
+strand_counts <- strand_occurrences(mut_mat_s, by= sample_names)
+head(strand_counts)
+#Perform Poissin test for strand asymmetry significance testing
+strand_bias <- strand_bias_test(strand_counts)
+strand_bias
+```
+```{r, fig.width=9}
+#Plot the mutation spectrum with strand distinction and the effect size (log2(untranscribed/transcribed) of the strand bias. Asteriks indicate significant strand bias
+ps1 <- plot_strand(strand_counts, mode = "relative")
+ps2 <- plot_strand_bias(strand_bias)
+gridExtra::grid.arrange(ps1, ps2, widths = c(3, 1.8))
+
+svg(filename='strand_bias_analysis.svg', width=9, height=5, pointsize = 12)
+gridExtra::grid.arrange(ps1, ps2, widths = c(3, 1.8))
+dev.off()
+
+tiff('strand_bias_analysis.tiff', units="in", width=9, height=5, res=600, compression = 'lzw')
+gridExtra::grid.arrange(ps1, ps2, widths = c(3, 1.8))
+dev.off()
+```
+Replicative strand bias analysis is available.  However, replication timing is dynamic and cell-type specific, which makes replication strand determination less straightforward than transcriptional strand bias analysis. Replication timing profiles can be generated with Repli-Seq experiments. Once the replication direction is defined, a strand asymmetry analysis can be performed similarly as the transcription strand bias analysis.
+```{r}
+##Extract signatures with strand bias. Extract 2 signatures from mutation count matrix with strand features
+nmf_res_strand <- extract_signatures(mut_mat_s, rank = 2)
+#Provide signature names
+colnames(nmf_res_strand$signatures) <- c("Signature A", "Signature B")
+#Plot signatures with 192 features
+a <- plot_192_profile(nmf_res_strand$signatures, condensed = TRUE)
+#Plot strand bias per mutation type for each signature with significance test
+b <- plot_signature_strand_bias(nmf_res_strand$signatures)
+
+svg(filename='signatures_strand_bias.svg', width=9, height=5, pointsize = 12)
+gridExtra::grid.arrange(a, b, ncol = 2, widths = c(5, 2.5))
+dev.off()
+
+tiff('signatures_strand_bias.tiff', units="in", width=9, height=5, res=600, compression = 'lzw')
+gridExtra::grid.arrange(a, b, ncol = 2, widths = c(5, 2.5))
+dev.off()
+gridExtra::grid.arrange(a, b, ncol = 2, widths = c(5, 2.5))
+```
+La firma B, si es la misma que en analisis NMF, es más común en clones KO. A nivel transripcional parece haber algo significativo. PENSAR
+```{r}
+##Genomic distribution
+#Define autosomal chromosomes
+chromosomes <- seqnames(get(ref_genome))[1:19]
+#Make a rainfall plot
+g1 <- plot_rainfall(vcfs[[1]], title = names(vcfs[1]), chromosomes = chromosomes, cex = 1.5, ylim = 1e+09, cex_text = 2)
+g2 <- plot_rainfall(vcfs[[2]], title = names(vcfs[2]), chromosomes = chromosomes, cex = 1.5, ylim = 1e+09, cex_text = 2)
+g3 <- plot_rainfall(vcfs[[3]], title = names(vcfs[3]), chromosomes = chromosomes, cex = 1.5, ylim = 1e+09, cex_text = 2)
+g4 <- plot_rainfall(vcfs[[4]], title = names(vcfs[4]), chromosomes = chromosomes, cex = 1.5, ylim = 1e+09, cex_text = 2)
+g5 <- plot_rainfall(vcfs[[5]], title = names(vcfs[5]), chromosomes = chromosomes, cex = 1.5, ylim = 1e+09, cex_text = 2)
+g6 <- plot_rainfall(vcfs[[6]], title = names(vcfs[6]), chromosomes = chromosomes, cex = 1.5, ylim = 1e+09, cex_text = 2)
+g7 <- plot_rainfall(vcfs[[7]], title = names(vcfs[7]), chromosomes = chromosomes, cex = 1.5, ylim = 1e+09, cex_text = 2)
+g8 <- plot_rainfall(vcfs[[8]], title = names(vcfs[8]), chromosomes = chromosomes, cex = 1.5, ylim = 1e+09, cex_text = 2)
+g9 <- plot_rainfall(vcfs[[9]], title = names(vcfs[9]), chromosomes = chromosomes, cex = 1.5, ylim = 1e+09, cex_text = 2)
+g10 <- plot_rainfall(vcfs[[10]], title = names(vcfs[10]), chromosomes = chromosomes, cex = 1.5, ylim = 1e+09, cex_text = 2)
+g11 <- plot_rainfall(vcfs[[11]], title = names(vcfs[11]), chromosomes = chromosomes, cex = 1.5, ylim = 1e+09, cex_text = 2)
+g12 <- plot_rainfall(vcfs[[12]], title = names(vcfs[12]), chromosomes = chromosomes, cex = 1.5, ylim = 1e+09, cex_text = 2)
+g13 <- plot_rainfall(vcfs[[13]], title = names(vcfs[13]), chromosomes = chromosomes, cex = 1.5, ylim = 1e+09, cex_text = 2)
+
+svg(filename='rainfalls.svg', width=10, height=11, pointsize = 12)
+gridExtra::grid.arrange(g1, g2, g3, g4, g5, g6, g7, g8, g9, g10, g11, g12, g13, ncol = 4)
+dev.off()
+
+tiff('rainfalls.tiff', units="in", width=10, height=11, res=600, compression = 'lzw')
+gridExtra::grid.arrange(g1, g2, g3, g4, g5, g6, g7, g8, g9, g10, g11, g12, g13, ncol = 4)
+dev.off()
+gridExtra::grid.arrange(g1, g2, g3, g4)
+gridExtra::grid.arrange(g5, g6, g7, g8)
+gridExtra::grid.arrange(g9, g10, g11, g12, g13)
+```
+The y-axis corresponds to the distance of a mutation with the previous mutation and is log10 transformed. Drop-downs from the plots indicate clusters or “hotspots” of mutations.
+```{r}
+##Enrichment or depletion of mutations in genomic regions
+##Example: regulation annotation data
+
+#Load enhancer annotation
+if(file.exists("./regulatory_features/mmus_gcrcm38.p6_enhancer.txt")){
+mmus_gcrcm38.p6_enhancer <- read.csv("C:/Users/Miguel/Google Drive/Trabajo/R/Proyectos/Mutational signatures/2020.01.17_1erNotebook_FACE_single_cell/regulatory_features/mmus_gcrcm38.p6_enhancer.txt")
+} else {
+  print("Annotation file does not exist")
+}
+Enhancer_g <- reduce(GRanges(mmus_gcrcm38.p6_enhancer$Chromosome.scaffold.name, IRanges(mmus_gcrcm38.p6_enhancer$Start..bp., mmus_gcrcm38.p6_enhancer$End..bp.)))
+
+#Load CTCF binding site annotation
+if(file.exists("./regulatory_features/mmus_gcrcm38.p6_CTCF Binding Site.txt")){
+mmus_gcrcm38.p6_CTCF.Binding.Site <- read.csv("./regulatory_features/mmus_gcrcm38.p6_CTCF Binding Site.txt")
+} else {
+  print("Annotation file does not exist") 
+}
+CTCF_g <- reduce(GRanges(mmus_gcrcm38.p6_CTCF.Binding.Site$Chromosome.scaffold.name, IRanges(mmus_gcrcm38.p6_CTCF.Binding.Site$Start..bp., mmus_gcrcm38.p6_CTCF.Binding.Site$End..bp.)))
+
+#Load Open chromatin annotation
+if(file.exists("./regulatory_features/mmus_gcrcm38.p6_Open_chromatin.txt")){
+mmus_gcrcm38.p6_Open_chromatin <- read.csv("./regulatory_features/mmus_gcrcm38.p6_Open_chromatin.txt")
+} else {
+  print("Annotation file does not exist")
+}
+Open_chromatin_g <- reduce(GRanges(mmus_gcrcm38.p6_Open_chromatin$Chromosome.scaffold.name, IRanges(mmus_gcrcm38.p6_Open_chromatin$Start..bp., mmus_gcrcm38.p6_Open_chromatin$End..bp.)))
+
+#Load promoter annotation
+if(file.exists("./regulatory_features/mmus_gcrcm38.p6_Promoter.txt")){
+mmus_gcrcm38.p6_Promoter <- read.csv("./regulatory_features/mmus_gcrcm38.p6_Promoter.txt")
+} else {
+  print("Annotation file does not exist")
+}
+Promoter_g <- reduce(GRanges(mmus_gcrcm38.p6_Promoter$Chromosome.scaffold.name, IRanges(mmus_gcrcm38.p6_Promoter$Start..bp., mmus_gcrcm38.p6_Promoter$End..bp.)))
+
+#Load Promoter Flanking Region annotation
+if(file.exists("./regulatory_features/mmus_gcrcm38.p6_Promoter_Flanking_Region.txt")){
+mmus_gcrcm38.p6_Promoter_Flanking_Region <- read.csv("./regulatory_features/mmus_gcrcm38.p6_Promoter_Flanking_Region.txt")
+} else {
+  print("Annotation file does not exist")
+}
+Promoter_Flanking_Region_g <- reduce(GRanges(mmus_gcrcm38.p6_Promoter_Flanking_Region$Chromosome.scaffold.name, IRanges(mmus_gcrcm38.p6_Promoter_Flanking_Region$Start..bp., mmus_gcrcm38.p6_Promoter_Flanking_Region$End..bp.)))
+
+#Load TF binding site annotation
+if(file.exists("./regulatory_features/mmus_gcrcm38.p6_TF_binding_site.txt")){
+  mmus_gcrcm38.p6_TF_binding_site <- read.csv("./regulatory_features/mmus_gcrcm38.p6_TF_binding_site.txt")
+} else {
+  print("Annotation file does not exist")
+}
+TF_binding_site_g <- reduce(GRanges(mmus_gcrcm38.p6_TF_binding_site$Chromosome.scaffold.name, IRanges(mmus_gcrcm38.p6_TF_binding_site$Start..bp., mmus_gcrcm38.p6_TF_binding_site$End..bp.)))
+
+#Load Bone marrow epigenome annotation
+if(file.exists("./regulatory_features/mmus_gcrcm38.p6._regulatoryEvidence.BMepigenome.txt")){
+  mmus_gcrcm38.p6._regulatoryEvidence.BMepigenome <- read.csv("./regulatory_features/mmus_gcrcm38.p6._regulatoryEvidence.BMepigenome.txt")
+} else {
+  print("Annotation file does not exist")
+}
+BMepigenome_g <- reduce(GRanges(mmus_gcrcm38.p6._regulatoryEvidence.BMepigenome$Chromosome.scaffold.name, IRanges(mmus_gcrcm38.p6._regulatoryEvidence.BMepigenome$Start..bp., mmus_gcrcm38.p6._regulatoryEvidence.BMepigenome$End..bp.)))
+
+#Combine all genomic regions in a named list
+regions <- GRangesList(Enhancer_g, CTCF_g, Open_chromatin_g, Promoter_g, Promoter_Flanking_Region_g, TF_binding_site_g, BMepigenome_g)
+names(regions) <- c("Enhancer", "CTCF", "Open chromatin", "Promoter", "Promoter flanking", "TF binding site", "BM epigenome")
+seqlevelsStyle(regions) <- "UCSC"
+```
+Estas regiones han sido descargadas directamente de BioMart (Ensembl). Corresponden a regiones definidas como reguladoras (que participan en la regulación transcripcional) sin esecificar el tipo de tejido. Dataset "Mouse Regulatory Features (GRCm38.p6)". Además ensayamos regiones con evidencia en médula ósea, dataset "Mouse Regulatory Evidence (GRCm38.p6)" filters: Epigenome: bone marrow adult. https://www.ensembl.org/biomart/martview/670135924262028e01dbc842bf59ee58    https://europepmc.org/article/PMC/4407537
+```{r, fig.width=10}
+#Load callable data per sample
+KO_I17_surveyed_file <- file("./callable/FACEKO538_I17_callable_status.bed")
+KO_M7_surveyed_file <- file("./callable/FACEKO538_M7_callable_status.bed")
+KO_E19_surveyed_file <- file("./callable/FACEKO577_E19_callable_status.bed")
+KO_F5_surveyed_file <- file("./callable/FACEKO577_F5_callable_status.bed")
+KO_E8_surveyed_file <- file("./callable/FACEKO581_E8_callable_status.bed")
+KO_G7_surveyed_file <- file("./callable/FACEKO581_G7_callable_status.bed")
+KO_H6_surveyed_file <- file("./callable/FACEKO591_H6_callable_status.bed")
+KO_K22_surveyed_file <- file("./callable/FACEKO591_K22_callable_status.bed")
+WT_H12_surveyed_file <- file("./callable/FACEWT578_H12_callable_status.bed")
+WT_K4_surveyed_file <- file("./callable/FACEWT578_K4_callable_status.bed")
+WT_E7_surveyed_file <- file("./callable/FACEWT599_E7_callable_status.bed")
+WT_E10_surveyed_file <- file("./callable/FACEWT599_E10_callable_status.bed")
+WT_D13_surveyed_file <- file("./callable/FACEWT600_D13_callable_status.bed")
+
+#Import callable data
+KO_I17_surveyed <- import(KO_I17_surveyed_file)
+KO_M7_surveyed <- import(KO_M7_surveyed_file)
+KO_E19_surveyed <- import(KO_E19_surveyed_file)
+KO_F5_surveyed <- import(KO_F5_surveyed_file)
+KO_E8_surveyed <- import(KO_E8_surveyed_file)
+KO_G7_surveyed <- import(KO_G7_surveyed_file)
+KO_H6_surveyed <- import(KO_H6_surveyed_file)
+KO_K22_surveyed <- import(KO_K22_surveyed_file)
+WT_H12_surveyed <- import(WT_H12_surveyed_file)
+WT_K4_surveyed <- import(WT_K4_surveyed_file)
+WT_E7_surveyed <- import(WT_E7_surveyed_file)
+WT_E10_surveyed <- import(WT_E10_surveyed_file)
+WT_D13_surveyed <- import(WT_D13_surveyed_file)
+
+#Set the UCSC naming standard
+seqlevelsStyle(KO_I17_surveyed) <- "UCSC"
+seqlevelsStyle(KO_M7_surveyed) <- "UCSC"
+seqlevelsStyle(KO_E19_surveyed) <- "UCSC"
+seqlevelsStyle(KO_F5_surveyed) <- "UCSC"
+seqlevelsStyle(KO_E8_surveyed) <- "UCSC"
+seqlevelsStyle(KO_G7_surveyed) <- "UCSC"
+seqlevelsStyle(KO_H6_surveyed) <- "UCSC"
+seqlevelsStyle(KO_K22_surveyed) <- "UCSC"
+seqlevelsStyle(WT_H12_surveyed) <- "UCSC"
+seqlevelsStyle(WT_K4_surveyed) <- "UCSC"
+seqlevelsStyle(WT_E7_surveyed) <- "UCSC"
+seqlevelsStyle(WT_E10_surveyed) <- "UCSC"
+seqlevelsStyle(WT_D13_surveyed) <- "UCSC"
+
+#Make a surveyed list
+surveyed_list <- list(KO_I17_surveyed, KO_M7_surveyed, KO_E19_surveyed, KO_F5_surveyed, KO_E8_surveyed, KO_G7_surveyed, KO_H6_surveyed, KO_K22_surveyed, WT_H12_surveyed, WT_K4_surveyed, WT_E7_surveyed, WT_E10_surveyed, WT_D13_surveyed)
+
+#Calculate the number of observed and expected number of mutations in each region
+distr <- genomic_distribution(vcfs, surveyed_list, regions)
+
+# Perform the enrichment/depletion test by condition
+distr_test <- enrichment_depletion_test(distr, by = animal)
+head(distr_test)
+
+svg(filename='enrichment_depletion_test.svg', width=10, height=11, pointsize = 12)
+plot_enrichment_depletion(distr_test)
+dev.off()
+
+tiff('enrichment_depletion_test.tiff', units="in", width=10, height=11, res=600, compression = 'lzw')
+plot_enrichment_depletion(distr_test)
+dev.off()
+plot_enrichment_depletion(distr_test)
+```
